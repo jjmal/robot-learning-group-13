@@ -31,7 +31,7 @@ python -m scripts.get_t5_embeddings --dataset_path datasets/hdvila
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compute T5 embeddings for text prompts")
-    parser.add_argument("--dataset_path", type=str, help="Root path to the dataset")
+    parser.add_argument("--dataset_path", type=pathlib.Path, help="Root path to the dataset")
     parser.add_argument(
         "--max_length",
         type=int,
@@ -45,10 +45,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def main(args: argparse.Namespace) -> None:
+
     metas_dir = os.path.join(args.dataset_path, "metas")
     metas_list = sorted(map(str, pathlib.Path(metas_dir).glob("*.txt")))[args.rank :: args.world_size]
 
     t5_xxl_dir = os.path.join(args.dataset_path, "t5_xxl")
+    
+    print("Saving T5-XXL embeddings to:", t5_xxl_dir)
+
     os.makedirs(t5_xxl_dir, exist_ok=True)
 
     encoder_config = CosmosT5TextEncoderConfig(ckpt_path=args.cache_dir)
