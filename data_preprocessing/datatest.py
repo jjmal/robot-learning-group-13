@@ -1,4 +1,5 @@
 import pyarrow.parquet as pq
+import pandas as pd
 
 path  = r"testdataset/action/ep.parquet"
 
@@ -17,4 +18,21 @@ print(df.columns.tolist())
 print(df.dtypes)
 
 # Preview data
-print(df['episode_index'].max())
+print(df.shape)
+
+print(f"{df.loc[0,'action']}")
+print(f"{df.loc[0,'observation.state']}")
+
+
+
+def save_last_ep_parquet():
+    df = pd.read_parquet(r"testdataset/action/full.parquet")
+
+    # Filter to only episode_index == 9
+    df_filtered = df[df["episode_index"] == 9]
+
+    # Save the filtered result
+    df_filtered.to_parquet(r"testdataset/action/ep.parquet", index=False)
+
+    print(f"Done. Rows kept: {len(df_filtered)}")
+
