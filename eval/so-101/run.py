@@ -156,7 +156,12 @@ class VAMInference:
             target_frame_name="gripper_frame_link",
             joint_names=JOINT_NAMES,
         )
-
+        
+        print("Pre-computing T5 embeddings for all tasks...")
+        self._prompt_embeddings = {
+            task: self.model.video2world_pipeline.encode_prompt(prompt).to(dtype=torch.bfloat16)
+            for task, prompt in TASK_PROMPTS.items()
+        }
         self._current_task = None
         self.prompt_embedding = None
 
@@ -165,16 +170,10 @@ class VAMInference:
     def reset(self, task: str) -> None:
         """Reset internal state for a new task/episode."""
         
-        # Re-encode only if the task has changed
         if task != self._current_task:
             if task not in TASK_PROMPTS:
                 raise ValueError(f"Unknown task '{task}'. Choose from: {list(TASK_PROMPTS)}")
-            prompt = TASK_PROMPTS[task]
-            print(f"Pre-computing T5 embedding for: '{prompt}'")
-            self.prompt_embedding = (
-                self.model.video2world_pipeline.encode_prompt(prompt)
-                .to(dtype=torch.bfloat16)
-            )
+            self.prompt_embedding = self._prompt_embeddings[task]
             self._current_task = task
         
         self._image_history: deque[np.ndarray] = deque(maxlen=(self._image_horizon - 1) * 4 + 1)
