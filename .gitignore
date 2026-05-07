@@ -5,3 +5,6 @@ uv.lock
 
 __pycache__/
 .venv/
+
+.history/
+.vscode/
