@@ -39,6 +39,8 @@ TASK_PROMPTS = {
     "task3.2": "push the object around the obstacle to reach the target position",
 }
 
+PROMPT_EMBEDDINGS_PATH = Path("../../checkpoints/prompt_embeddings.pt")
+
 CAMERA_HEIGHT = 480 # double check camera res; either keep it like that or resize to this
 CAMERA_WIDTH = 640
 NUM_ATTEMPTS = 5 # num attempts allowed per task; only the best counts for eval
@@ -156,12 +158,19 @@ class VAMInference:
             target_frame_name="gripper_frame_link",
             joint_names=JOINT_NAMES,
         )
+
+        if PROMPT_EMBEDDINGS_PATH.exists():
+            self._prompt_embeddings = torch.load(PROMPT_EMBEDDINGS_PATH)
+            print("Loaded saved T5 prompt embeddings.")
+        else:
+            print("Pre-computing T5 embeddings for all tasks...")
+            self._prompt_embeddings = {
+                task: self.model.video2world_pipeline.encode_prompt(prompt).to(dtype=torch.bfloat16)
+                for task, prompt in TASK_PROMPTS.items()
+            }
+            torch.save(self._prompt_embeddings, PROMPT_EMBEDDINGS_PATH)
+            print("Saved T5 prompt embeddings.")
         
-        print("Pre-computing T5 embeddings for all tasks...")
-        self._prompt_embeddings = {
-            task: self.model.video2world_pipeline.encode_prompt(prompt).to(dtype=torch.bfloat16)
-            for task, prompt in TASK_PROMPTS.items()
-        }
         self._current_task = None
         self.prompt_embedding = None
 
