@@ -1,7 +1,0 @@
-python get_t5_embeddings.py --dataset_path "D:\RobotLearning\dataset\testdataset" --cache_dir "D:\RobotLearning\model_weights\t5"
-python get_t5_embeddings.py --dataset_path "C:/Users/User/Desktop/code_to_run/robot-learning-project/robot-learning-group-13/testdata" --cache_dir "google/t5-v1_1-small"
-python get_t5_embeddings.py --dataset_path "..\\..\\testdataset" --cache_dir "google/t5-v1_1-small"
-
-
-Pipeline:
-get_t5_embeddings -> dataset (dataset_video)

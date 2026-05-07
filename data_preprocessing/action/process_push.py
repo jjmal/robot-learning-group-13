@@ -16,19 +16,20 @@ An episode is identified by the shared stem across all three files, e.g.:
 Output: one zarr group per episode at <output-dir>/<stem>.zarr containing:
     workspace_rgb              (T_vid, H, W, 3)  uint8 — raw video frames
     workspace_rgb_timestamps   (T_vid,)           int64 — nanoseconds
-    ee_pose                    (T_act, 5)         float32 — first 5 dims of action
-    ee_pose_timestamps         (T_act,)           int64 — nanoseconds
-    observation_state          (T_act, 5)         float32 — first 5 dims of obs state
+    actions                    (T_act, 6)         float32 — first 6 dims of action
+    actions_timestamps         (T_act,)           int64 — nanoseconds
+    observation_state          (T_act, 6)         float32 — first 6 dims of obs state
     observation_state_timestamps (T_act,)         int64 — nanoseconds
-    language_embedding         (1, D)             float32 — T5 embedding
+    language_embedding         (1, 10, 512)             float32 — T5 embedding
     language_embedding_timestamps (1,)            int64 — nanoseconds (episode start)
 
 Usage:
-    python process_custom.py \
+    python process_push.py \
         --data-root /path/to/data \
         --output-dir /path/to/zarr_output \
         [--video-freq 30] \
-        [--action-freq 30]
+        [--action-freq 30] \
+        [--overwrite]
 """
 
 import argparse
@@ -154,11 +155,10 @@ def process_episode(
         print(f"  Warning: no 'timestamp' column in {parquet_path.name}; generating from action_freq")
         timestamps_ns = (np.arange(len(df), dtype=np.float64) / action_freq * S_TO_NS).astype(np.int64)
 
-    # Action — drop 6th dimension → shape (T, 5)
-    action = read_vector_column(df, "action")[:, :5]
+    
+    action = read_vector_column(df, "action")[:, :6]
 
-    # Observation state — drop 6th dimension → shape (T, 5)
-    obs_state = read_vector_column(df, "observation.state")[:, :5]
+    obs_state = read_vector_column(df, "observation.state")[:, :6]
 
     T_act = len(action)
     assert len(timestamps_ns) == T_act, (
@@ -192,16 +192,16 @@ def process_episode(
         compressor=TRAJ_COMPRESSOR,
     )
 
-    # Action (ee_pose)
+    # Action (actions)
     root.array(
-        "ee_pose",
+        "actions",
         action,
-        chunks=(T_act, 5),
+        chunks=(T_act, 6),
         dtype=np.float32,
         compressor=TRAJ_COMPRESSOR,
     )
     root.array(
-        "ee_pose_timestamps",
+        "actions_timestamps",
         timestamps_ns,
         chunks=(T_act,),
         dtype=np.int64,
@@ -212,7 +212,7 @@ def process_episode(
     root.array(
         "observation_state",
         obs_state,
-        chunks=(T_act, 5),
+        chunks=(T_act, 6),
         dtype=np.float32,
         compressor=TRAJ_COMPRESSOR,
     )
