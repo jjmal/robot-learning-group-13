@@ -29,15 +29,10 @@ from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from lerobot.model import RobotKinematics
 from lerobot.robots.so_follower.robot_kinematic_processor import InverseKinematicsEEToJoints
 
+from prompts import TASK_PROMPTS
+
 # TODO: adjust constants as needed
 MAX_STEPS_PER_ATTEMPT = 200
-
-TASK_PROMPTS = {
-    "task1": "push the object in a straight line to reach the target position",
-    "task2": "push the object around the obstacle to reach the target position",
-    "task3.1": "push the object in a straight line to reach the target position",
-    "task3.2": "push the object around the obstacle to reach the target position",
-}
 
 PROMPT_EMBEDDINGS_PATH = Path("../../checkpoints/prompt_embeddings.pt")
 
