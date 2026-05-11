@@ -41,7 +41,7 @@ TASK_PROMPTS = {
 
 PROMPT_EMBEDDINGS_PATH = Path("../../checkpoints/prompt_embeddings.pt")
 
-CAMERA_HEIGHT = 480 # double check camera res; either keep it like that or resize to this
+CAMERA_HEIGHT = 480 # actual camera resolution
 CAMERA_WIDTH = 640
 NUM_ATTEMPTS = 5 # num attempts allowed per task; only the best counts for eval
 
@@ -362,8 +362,6 @@ def get_robot_image(robot: SO101Follower) -> np.ndarray:
     obs = robot.get_observation()
     # TODO: adjust key if your camera has a different name
     image = obs["front"]
-    # TODO: either resize here or pass higher res images
-    image = cv2.resize(image, (CAMERA_WIDTH, CAMERA_HEIGHT))
     if image.shape != (CAMERA_HEIGHT, CAMERA_WIDTH, 3):
         raise ValueError(f"Unexpected image shape {image.shape}.")
     return image.astype(np.uint8)
