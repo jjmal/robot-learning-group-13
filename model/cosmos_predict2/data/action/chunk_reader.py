@@ -32,6 +32,7 @@ class ChunkReader:
         data_dir: Path | None = None,
         logger: logging.Logger | None = None,
         verbose: bool = False,
+        load_precomputed_crossattn_emb: bool = False,
     ) -> None:
         self._logger = logger or logging.getLogger(__name__)
 
@@ -110,6 +111,7 @@ class ChunkReader:
         self._stats_id = stats_id
         self._data_dir = data_dir
         self._verbose = verbose
+        self._load_precomputed_crossattn_emb = load_precomputed_crossattn_emb
 
     def _get_timesteps(
         self,
@@ -270,7 +272,7 @@ class ChunkReader:
         progress = step_idx / self._num_timesteps[episode_idx]
 
         with zarr.open(self._episode_paths[episode_idx], "r") as root:
-            return {
+            result = {
                 key: vals
                 for key, meta in self._data_components.items()
                 if (
@@ -280,3 +282,12 @@ class ChunkReader:
                 )
                 is not None
             }
+            if self._load_precomputed_crossattn_emb and self._restrict_keys is None and "crossattn_emb" in root:
+                rgb_ts = root["workspace_rgb_timestamps"][:]
+                frame_idx = int(np.searchsorted(rgb_ts, step_timestamp, side="left"))
+                frame_idx = min(frame_idx, len(rgb_ts) - 1)
+                window_starts = root["crossattn_emb_window_starts"][:]
+                window_idx = int(max(0, np.searchsorted(window_starts, frame_idx, side="right") - 1))
+                result["crossattn_emb"] = root["crossattn_emb"][window_idx].astype(np.float32)
+                result["video_sigma"] = np.array([root.attrs["crossattn_sigma"]], dtype=np.float32)
+            return result

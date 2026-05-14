@@ -5,4 +5,4 @@ defaults:
 
 dataset:
   dataset:
-    data_dir: /path/to/libero_goal_one
+    data_dir: /ephemeral/libero_zarr/libero_goal

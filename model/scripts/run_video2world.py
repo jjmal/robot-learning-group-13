@@ -141,6 +141,7 @@ def parse_args() -> argparse.Namespace:
         help="Run the generation in benchmark mode. It means that generation will be rerun a few times and the average generation time will be shown.",
     )
     parser.add_argument("--use_cuda_graphs", action="store_true", help="Use CUDA Graphs for the text2image inference.")
+    parser.add_argument("--use_first_frames", action="store_true", help="Condition on the first frames of the video instead of the last.")
     return parser.parse_args()
 
 
@@ -223,6 +224,7 @@ def process_single_generation(
     seed: int,
     benchmark: bool = False,
     use_cuda_graphs: bool = False,
+    use_first_frames: bool = False,
 ) -> bool:
     # Validate input file
     if not validate_input_file(input_path, num_conditional_frames):
@@ -246,6 +248,7 @@ def process_single_generation(
             guidance=guidance,
             seed=seed,
             use_cuda_graphs=use_cuda_graphs,
+            use_first_frames=use_first_frames,
         )
         if benchmark and i > 0:
             torch.cuda.synchronize()
@@ -307,6 +310,7 @@ def generate_video(args: argparse.Namespace, pipe: Video2WorldPipeline) -> None:
                 seed=args.seed,
                 benchmark=args.benchmark,
                 use_cuda_graphs=args.use_cuda_graphs,
+                use_first_frames=args.use_first_frames,
             )
     else:
         process_single_generation(
@@ -321,6 +325,7 @@ def generate_video(args: argparse.Namespace, pipe: Video2WorldPipeline) -> None:
             seed=args.seed,
             benchmark=args.benchmark,
             use_cuda_graphs=args.use_cuda_graphs,
+            use_first_frames=args.use_first_frames,
         )
 
     return

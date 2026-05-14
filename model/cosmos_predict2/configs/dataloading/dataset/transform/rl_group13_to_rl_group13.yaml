@@ -1,0 +1,16 @@
+data_transforms:
+  - name: CosmosProcessImage
+    targets: [workspace_rgb]
+    resize_sizes: ${policy_io.img_resize_sizes}
+
+  - name: Flatten
+    targets: [lowdim]
+
+  - name: Concat
+    targets: ${policy_io.concat_groups.action/lowdim_concat}
+    out_key: "action/lowdim_concat"
+  - name: Concat
+    targets: ${policy_io.concat_groups.obs/lowdim_concat}
+    out_key: "obs/lowdim_concat"
+
+source_component_names: {}

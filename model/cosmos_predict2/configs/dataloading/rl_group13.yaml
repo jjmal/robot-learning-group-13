@@ -1,0 +1,8 @@
+defaults:
+  - dataset: rl_group13
+  - policy_io: rl_group13
+  - _self_
+
+dataset:
+  dataset:
+    data_dir: /ephemeral/data_processed

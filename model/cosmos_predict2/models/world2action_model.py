@@ -395,7 +395,11 @@ class World2ActionModel(ImaginaireModel):
         if "obs/lowdim_concat" not in data_batch:
             data_batch["obs/lowdim_concat"] = torch.empty((B, 0, A), **self.tensor_kwargs)
 
-        crossattn_emb, video_sigma_B_1 = self.get_crossattn_emb(data_batch)
+        if "crossattn_emb" in data_batch:
+            crossattn_emb = data_batch["crossattn_emb"].to(**self.tensor_kwargs)
+            video_sigma_B_1 = data_batch["video_sigma"].to(**self.tensor_kwargs)
+        else:
+            crossattn_emb, video_sigma_B_1 = self.get_crossattn_emb(data_batch)
 
         normalised_data_batch: dict = self.pipe.normalizer(data_batch, strict=False)
 

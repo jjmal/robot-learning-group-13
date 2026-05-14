@@ -125,6 +125,7 @@ def read_and_process_video(
     num_video_frames: int,
     num_latent_conditional_frames: int = 2,
     resize: bool = True,
+    use_first_frames: bool = False,
 ):
     """
     Reads a video, processes it for model input.
@@ -168,7 +169,8 @@ def read_and_process_video(
 
     # Calculate how many frames to extract from input video
     frames_to_extract = 4 * (num_latent_conditional_frames - 1) + 1
-    log.info(f"Will extract the last {frames_to_extract} frames from input video and pad to {num_video_frames}")
+    position = "first" if use_first_frames else "last"
+    log.info(f"Will extract the {position} {frames_to_extract} frames from input video and pad to {num_video_frames}")
 
     # Validate num_latent_conditional_frames
     if num_latent_conditional_frames not in [1, 2]:
@@ -179,9 +181,12 @@ def read_and_process_video(
             f"Video has only {available_frames} frames but needs at least {frames_to_extract} frames for num_latent_conditional_frames={num_latent_conditional_frames}"
         )
 
-    # Extract the last frames_to_extract from input video
-    start_idx = available_frames - frames_to_extract
-    extracted_frames = video_tensor[:, start_idx:, :, :]  # (C, frames_to_extract, H, W)
+    # Extract the first or last frames_to_extract from input video
+    if use_first_frames:
+        extracted_frames = video_tensor[:, :frames_to_extract, :, :]  # (C, frames_to_extract, H, W)
+    else:
+        start_idx = available_frames - frames_to_extract
+        extracted_frames = video_tensor[:, start_idx:, :, :]  # (C, frames_to_extract, H, W)
 
     # Convert to (frames_to_extract, C, H, W) for resize
     extracted_frames = extracted_frames.permute(1, 0, 2, 3)  # (frames_to_extract, C, H, W)
@@ -1007,6 +1012,7 @@ class Video2WorldPipeline(BasePipeline):
         stop_after_step: int | None = None,  # implies return_last_hidden_states
         seed: int = 0,
         use_cuda_graphs: bool = False,
+        use_first_frames: bool = False,
     ) -> torch.Tensor | None:
         # Parameter check
         assert aspect_ratio == "4:3"
@@ -1040,6 +1046,7 @@ class Video2WorldPipeline(BasePipeline):
                 num_video_frames,
                 num_latent_conditional_frames,
                 resize=True,
+                use_first_frames=use_first_frames,
             )
         elif ext in _IMAGE_EXTENSIONS:
             if num_latent_conditional_frames == 1:

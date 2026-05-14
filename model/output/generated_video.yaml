@@ -1,0 +1,95 @@
+adjust_video_noise: 'True'
+conditioner:
+  _target_: <class 'cosmos_predict2.conditioner.VideoConditioner'>
+  fps:
+    _target_: <class 'cosmos_predict2.conditioner.ReMapkey'>
+    dropout_rate: '0.0'
+    dtype: null
+    input_key: fps
+    output_key: fps
+  padding_mask:
+    _target_: <class 'cosmos_predict2.conditioner.ReMapkey'>
+    dropout_rate: '0.0'
+    dtype: null
+    input_key: padding_mask
+    output_key: padding_mask
+  text:
+    _target_: <class 'cosmos_predict2.conditioner.TextAttr'>
+    dropout_rate: '0.0'
+    input_key:
+    - obs/language_embedding
+  use_video_condition:
+    _target_: <class 'cosmos_predict2.conditioner.BooleanFlag'>
+    dropout_rate: '0.0'
+    input_key: fps
+    output_key: use_video_condition
+conditioning_strategy: frame_replace
+ema:
+  _target_: cosmos_predict2.configs.defaults.ema.EMAConfig
+  enabled: 'False'
+  iteration_shift: '0'
+  rate: '0.1'
+guardrail_config:
+  checkpoint_dir: /home/ubuntu/robot-learning-group-13/model/checkpoints
+  enabled: 'True'
+  offload_model_to_cpu: 'False'
+input_image_key: images
+input_video_key: video
+max_num_conditional_frames: '2'
+min_num_conditional_frames: '1'
+net:
+  _target_: <class 'cosmos_predict2.models.video2world_dit.MinimalV1LVGDiT'>
+  adaln_lora_dim: '256'
+  atten_backend: minimal_a2a
+  concat_padding_mask: 'True'
+  extra_per_block_abs_pos_emb: 'False'
+  in_channels: '16'
+  max_frames: '128'
+  max_img_h: '240'
+  max_img_w: '240'
+  model_channels: '2048'
+  num_blocks: '28'
+  num_heads: '16'
+  out_channels: '16'
+  patch_spatial: '2'
+  patch_temporal: '1'
+  pos_emb_cls: rope3d
+  pos_emb_interpolation: crop
+  pos_emb_learnable: 'True'
+  rope_enable_fps_modulation: 'False'
+  rope_h_extrapolation_ratio: '3.0'
+  rope_t_extrapolation_ratio: '1.0'
+  rope_w_extrapolation_ratio: '3.0'
+  sac_config:
+    _target_: cosmos_predict2.models.text2image_dit.SACConfig
+    every_n_blocks: '1'
+    mode: predict2_2b_720
+  use_adaln_lora: 'True'
+precision: bfloat16
+rectified_flow_loss_weight_uniform: 'True'
+rectified_flow_t_scaling_factor: '1.0'
+resize_online: 'False'
+resolution: '480'
+sigma_conditional: '0.0001'
+sigma_data: '1.0'
+state_ch: '16'
+state_t: '16'
+text_encoder:
+  cls: TextEncoderClass.T5
+  t5:
+    ckpt_path: /home/ubuntu/robot-learning-group-13/model/checkpoints/text_encoder/t5-11b
+    embed_dim: '1024'
+    num_tokens: '512'
+timestamps:
+  is_forward: 'False'
+  nfe: '35'
+  order: '7.0'
+  t_max: '80.0'
+  t_min: '0.002'
+tokenizer:
+  _target_: <class 'cosmos_predict2.tokenizers.tokenizer.TokenizerInterface'>
+  chunk_duration: '81'
+  load_mean_std: 'False'
+  name: tokenizer
+  temporal_window: '16'
+  vae_pth: /home/ubuntu/robot-learning-group-13/model/checkpoints/video_backbone//tokenizer/tokenizer.pth
