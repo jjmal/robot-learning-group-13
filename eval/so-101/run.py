@@ -22,17 +22,20 @@ import cv2
 import threading
 from pynput import keyboard
 
+# TODO: double check if model. is needed in front
 from model.cosmos_predict2.configs.config import make_config
 from model.cosmos_predict2.data.action.utils import extract_normalization_types
 from model.cosmos_predict2.pipelines.video2world import Video2WorldPipeline
 from model.cosmos_predict2.pipelines.video2world2action import Video2World2ActionPipeline
 from model.cosmos_predict2.pipelines.world2action import World2ActionPipeline
-from model.imaginaire.lazy_config import instantiate
-from model.imaginaire.utils.config_helper import override
+from imaginaire.lazy_config import instantiate
+from imaginaire.utils.config_helper import override
 
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from lerobot.model.kinematics import RobotKinematics
 from lerobot.robots.so_follower.robot_kinematic_processor import InverseKinematicsEEToJoints
+from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
+
 
 from prompts import TASK_PROMPTS
 
@@ -174,18 +177,25 @@ class VAMInference:
             joint_names=JOINT_NAMES,
         )
 
-        # TODO: for future, we will precompute the embeddings, save them and load them here
-        if PROMPT_EMBEDDINGS_PATH.exists():
-            self._prompt_embeddings = torch.load(PROMPT_EMBEDDINGS_PATH)
-            print("Loaded saved T5 prompt embeddings.")
-        else:
-            print("Pre-computing T5 embeddings for all tasks...")
-            self._prompt_embeddings = {
-                task: self.model.video2world_pipeline.encode_prompt(prompt).to(dtype=torch.bfloat16)
-                for task, prompt in TASK_PROMPTS.items()
-            }
-            torch.save(self._prompt_embeddings, PROMPT_EMBEDDINGS_PATH)
-            print("Saved T5 prompt embeddings.")
+        # FAKE embeddings - only for testing pipeline, NOT for real inference
+        self._prompt_embeddings = {
+            task: torch.randn(1, 512, 1024, dtype=torch.bfloat16)
+            for task in TASK_PROMPTS
+        }
+        print("WARNING: Using FAKE prompt embeddings - for testing only!")
+
+        # # TODO: for future, we will precompute the embeddings, save them and load them here
+        # if PROMPT_EMBEDDINGS_PATH.exists():
+        #     self._prompt_embeddings = torch.load(PROMPT_EMBEDDINGS_PATH)
+        #     print("Loaded saved T5 prompt embeddings.")
+        # else:
+        #     print("Pre-computing T5 embeddings for all tasks...")
+        #     self._prompt_embeddings = {
+        #         task: self.model.video2world_pipeline.encode_prompt(prompt).to(dtype=torch.bfloat16)
+        #         for task, prompt in TASK_PROMPTS.items()
+        #     }
+        #     torch.save(self._prompt_embeddings, PROMPT_EMBEDDINGS_PATH)
+        #     print("Saved T5 prompt embeddings.")
         
         self._current_task = None
         self.prompt_embedding = None
@@ -288,7 +298,8 @@ class VAMInference:
 
         # return np.concatenate([eef_pos, rot_6d, [gripper]]).astype(np.float32)
 
-        eef_matrix = self.kinematics.forward_kinematics(joint_angles)  # use directly
+        # eef_matrix = self.kinematics.forward_kinematics(joint_angles)  # use directly
+        eef_matrix = self.kinematics.forward_kinematics(joint_angles.astype(np.float64))
         eef_pos = eef_matrix[:3, 3]
         rot_6d = eef_matrix[:3, :3][:2].reshape(6,)
         # gripper = np.clip(joint_angles[-1] / 50.0 - 1.0, -1.0, 1.0) # [0,100] -> [-1,1]; remove gripper anyways
@@ -318,7 +329,8 @@ class VAMInference:
         rot_matrix = self._matrix_from_6d(action[3:9])
 
         # FK to get current EEF pose
-        eef_current = self.kinematics.forward_kinematics(current_joints)  # 4x4
+        # eef_current = self.kinematics.forward_kinematics(current_joints)  # 4x4
+        eef_current = self.kinematics.forward_kinematics(current_joints.astype(np.float64))
 
         # target EEF = current EEF + delta_pos
         eef_target = eef_current.copy()
@@ -327,7 +339,7 @@ class VAMInference:
         
         # IK: target EEF -> joint positions
         joint_positions = self.kinematics.inverse_kinematics(
-            current_joint_pos=current_joints,  # degrees
+            current_joint_pos=current_joints.astype(np.float64),  # degrees
             desired_ee_pose=eef_target,        # 4x4
         )  # returns degrees
         
@@ -363,24 +375,79 @@ class VAMInference:
 
 
 # Robot helpers
-def connect_robot(port: str) -> SO101Follower:
-    config = SO101FollowerConfig(port=port, id="so101_pusher")
+# def connect_robot(port: str) -> SO101Follower:
+#     config = SO101FollowerConfig(port=port, id="so101_pusher")
+#     robot = SO101Follower(config)
+#     robot.connect()
+#     print(f"Robot connected on {port}")
+#     return robot
+
+# def connect_robot(port: str, camera_index: int = 0) -> SO101Follower:
+#     config = SO101FollowerConfig(
+#         port=port,
+#         id="so101_pusher",
+#         cameras={
+#             "front": OpenCVCameraConfig(
+#                 index_or_path=camera_index,
+#                 width=CAMERA_WIDTH,
+#                 height=CAMERA_HEIGHT,
+#                 fps=30,
+#                 color_mode="rgb",
+#             )
+#         }
+#     )
+#     robot = SO101Follower(config)
+#     robot.connect()
+#     time.sleep(2.0)  # wait for camera to initialize
+#     print(f"Robot connected on {port}, camera on index {camera_index}")
+#     return robot
+
+def connect_robot(port: str, camera_index: int = 0) -> SO101Follower:
+    config = SO101FollowerConfig(
+        port=port,
+        id="so101_pusher",
+        cameras={}  # fara camera in LeRobot
+    )
     robot = SO101Follower(config)
     robot.connect()
+    init_camera(camera_index)  # initializezi separat
     print(f"Robot connected on {port}")
     return robot
 
+_camera = None
+
+def init_camera(camera_index: int = 0) -> cv2.VideoCapture:
+    global _camera
+    _camera = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
+    _camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
+    _camera.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+    _camera.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+    _camera.set(cv2.CAP_PROP_FPS, 30)
+    print(f"Camera initialized: {_camera.isOpened()}")
+    return _camera
 
 def get_robot_image(robot: SO101Follower) -> np.ndarray:
-    """
-    Read one RGB frame from the robot camera.
-    """
-    obs = robot.get_observation()
-    # TODO: adjust key if your camera has a different name
-    image = obs["front"]
+    """Read one RGB frame directly via OpenCV (bypasses LeRobot camera)."""
+    global _camera
+    ret, frame = _camera.read()
+    if not ret:
+        raise RuntimeError("Failed to read frame from camera.")
+    # OpenCV returns BGR, convert to RGB
+    image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     if image.shape != (CAMERA_HEIGHT, CAMERA_WIDTH, 3):
-        raise ValueError(f"Unexpected image shape {image.shape}.")
+        image = cv2.resize(image, (CAMERA_WIDTH, CAMERA_HEIGHT))
     return image.astype(np.uint8)
+
+# def get_robot_image(robot: SO101Follower) -> np.ndarray:
+#     """
+#     Read one RGB frame from the robot camera.
+#     """
+#     obs = robot.get_observation()
+#     # TODO: adjust key if your camera has a different name
+#     image = obs["front"]
+#     if image.shape != (CAMERA_HEIGHT, CAMERA_WIDTH, 3):
+#         raise ValueError(f"Unexpected image shape {image.shape}.")
+#     return image.astype(np.uint8)
 
 
 def get_joint_angles(robot: SO101Follower) -> np.ndarray:
@@ -481,7 +548,7 @@ def run_attempt(
         joint_angles = get_joint_angles(robot)
         replay_images.append(image)
 
-        action = policy.step(image, joint_angles)
+        action = policy.step(image, policy._current_task, joint_angles)
         send_action(robot, action)
 
         if object_in_target_circle(image):
@@ -526,6 +593,7 @@ def run_pushing_eval(
     dataset_statistics_path: str,
     task: str,
     robot_port: str = "/dev/ttyACM0", # "/dev/ttyUSB0",
+    camera_index: int = 0,
     img_horizon: int = 5,
     lowdim_horizon: int = 1,
     stop_video_denoising_step: int = 10,
@@ -569,7 +637,7 @@ def run_pushing_eval(
         rollout_dir=rollout_dir,
     )
 
-    robot = connect_robot(robot_port)
+    robot = connect_robot(robot_port, camera_index)
     overall_success = False
     total_attempts = 0
     total_successes = 0
