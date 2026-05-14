@@ -8,3 +8,11 @@ __pycache__/
 
 .history/
 .vscode/
+
+eval/so-101/cuda-keyring_1.1-1_all.deb
+eval/so-101/import_time.txt
+eval/so-101/running_prompt.txt
+
+Miniforge3-Linux-x86_64.sh
+model/.venv
+

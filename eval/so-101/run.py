@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import os
 import pathlib
-from random import random
+import random
 import time
 from collections import deque
 from pathlib import Path
 from typing import Iterable
+
+SCRIPT_START_TIME = time.time()  # for measuring total runtime 
 
 import imageio
 import numpy as np
@@ -19,16 +22,16 @@ import cv2
 import threading
 from pynput import keyboard
 
-from cosmos_predict2.configs.config import make_config
-from cosmos_predict2.data.action.utils import extract_normalization_types
-from cosmos_predict2.pipelines.video2world import Video2WorldPipeline
-from cosmos_predict2.pipelines.video2world2action import Video2World2ActionPipeline
-from cosmos_predict2.pipelines.world2action import World2ActionPipeline
-from imaginaire.lazy_config import instantiate
-from imaginaire.utils.config_helper import override
+from model.cosmos_predict2.configs.config import make_config
+from model.cosmos_predict2.data.action.utils import extract_normalization_types
+from model.cosmos_predict2.pipelines.video2world import Video2WorldPipeline
+from model.cosmos_predict2.pipelines.video2world2action import Video2World2ActionPipeline
+from model.cosmos_predict2.pipelines.world2action import World2ActionPipeline
+from model.imaginaire.lazy_config import instantiate
+from model.imaginaire.utils.config_helper import override
 
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
-from lerobot.model import RobotKinematics
+from lerobot.model.kinematics import RobotKinematics
 from lerobot.robots.so_follower.robot_kinematic_processor import InverseKinematicsEEToJoints
 
 from prompts import TASK_PROMPTS
@@ -42,7 +45,7 @@ CAMERA_HEIGHT = 480 # actual camera resolution
 CAMERA_WIDTH = 640
 NUM_ATTEMPTS = 5 # num attempts allowed per task; only the best counts for eval
 
-URDF_PATH = os.path.join(os.path.dirname(__file__), "so-101", "SO101", "so101_new_calib.urdf")
+URDF_PATH = os.path.join(os.path.dirname(__file__), "SO101", "so101_new_calib.urdf")
 
 JOINT_NAMES = [
     "shoulder_pan",
@@ -90,18 +93,22 @@ def load_video2world2action_pipeline(
     dtype: torch.dtype = torch.bfloat16,
 ) -> Video2World2ActionPipeline:
     """Instantiate the video-to-world-to-action pipeline and load normalizer statistics."""
+    print("Loading config...")
     config = make_config()
     config = override(config, ["--", f"experiment={experiment_name}"])
     config.model.config.video_pipe_config.guardrail_config.enabled = False
 
+    print("Loading video backbone...")
     video2world_pipe = Video2WorldPipeline.from_config(
         config=config.model.config.video_pipe_config,
         dit_path=video_model_path,
         device="cuda",
         torch_dtype=dtype,
         load_ema_to_reg=False,
+        use_text_encoder=False, # TODO: let it have the 45GB text encoder as well 
     )
 
+    print("Loading action decoder...")
     world2action_pipe = World2ActionPipeline.from_config(
         config.model.config.pipe_config,
         dit_path=action_model_path,
@@ -111,6 +118,7 @@ def load_video2world2action_pipeline(
 
     data_config = instantiate(config.data_config)
 
+    print("Loading dataset statistics...")
     with dataset_statistics_path.open("rb") as stats_file:
         stats = json.load(stats_file)
     world2action_pipe.normalizer.build_from_stats(
@@ -121,6 +129,7 @@ def load_video2world2action_pipeline(
         dtype=dtype,
     )
 
+    print("Pipeline ready.")
     return Video2World2ActionPipeline(video2world_pipe, world2action_pipe).cuda()
 
 
@@ -516,7 +525,7 @@ def run_pushing_eval(
     action_model_path: str,
     dataset_statistics_path: str,
     task: str,
-    robot_port: str = "/dev/ttyUSB0",
+    robot_port: str = "/dev/ttyACM0", # "/dev/ttyUSB0",
     img_horizon: int = 5,
     lowdim_horizon: int = 1,
     stop_video_denoising_step: int = 10,
@@ -537,6 +546,7 @@ def run_pushing_eval(
             --task eval1 \\
             --robot-port /dev/ttyUSB0
     """
+    print('yay!', time.time())
     set_seed_everywhere(seed)
     run_label = (
         f"{Path(action_model_path).stem}"
@@ -569,7 +579,7 @@ def run_pushing_eval(
             # for now, manually reset the scene before each attempt; 
             # automated reset logic to a fixed initial position, although the object still needs manual replacement
             # TODO: tune angles and use the automatic reset
-            reset_robot_to_start(robot)
+            # reset_robot_to_start(robot)
             input(
                 f"\n[Attempt {attempt_idx}/{NUM_ATTEMPTS}] "
                 "Place object in start circle, then press Enter..."
@@ -608,4 +618,7 @@ def run_pushing_eval(
 
 
 if __name__ == "__main__":
+    elapsed = (time.time() - SCRIPT_START_TIME) / 60
+    print(f'Starting SO-101 pushing evaluation at {time.strftime("%H:%M:%S")}')
+    print(f'Time since script start (imports etc.): {elapsed:.1f} min')
     tyro.cli(run_pushing_eval)
