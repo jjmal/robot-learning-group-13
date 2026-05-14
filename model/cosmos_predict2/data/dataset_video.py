@@ -78,7 +78,6 @@ class Dataset(_Dataset):
 
         video_dir = os.path.join(self.dataset_dir, "video")
         self.t5_dir = os.path.join(self.dataset_dir, "t5_xxl")
-
         video_paths = sorted(
             [
                 os.path.join(video_dir, f)

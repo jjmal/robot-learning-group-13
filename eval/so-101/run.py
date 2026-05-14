@@ -16,6 +16,8 @@ import tyro
 from einops import rearrange
 from scipy.spatial.transform import Rotation
 import cv2
+import threading
+from pynput import keyboard
 
 from cosmos_predict2.configs.config import make_config
 from cosmos_predict2.data.action.utils import extract_normalization_types
@@ -29,15 +31,10 @@ from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from lerobot.model import RobotKinematics
 from lerobot.robots.so_follower.robot_kinematic_processor import InverseKinematicsEEToJoints
 
+from prompts import TASK_PROMPTS
+
 # TODO: adjust constants as needed
 MAX_STEPS_PER_ATTEMPT = 200
-
-TASK_PROMPTS = {
-    "task1": "push the object in a straight line to reach the target position",
-    "task2": "push the object around the obstacle to reach the target position",
-    "task3.1": "push the object in a straight line to reach the target position",
-    "task3.2": "push the object around the obstacle to reach the target position",
-}
 
 PROMPT_EMBEDDINGS_PATH = Path("../../checkpoints/prompt_embeddings.pt")
 
@@ -63,6 +60,15 @@ TARGET_RADIUS_PX = 50
 
 OBJECT_HSV_LOWER = np.array([0, 0, 0])
 OBJECT_HSV_UPPER = np.array([255, 255, 255])
+
+START_POSITION = {
+    "shoulder_pan.pos":  0.0,
+    "shoulder_lift.pos": -90.0,  # TODO: tune these starting joint angles
+    "elbow_flex.pos":    90.0,
+    "wrist_flex.pos":    0.0,
+    "wrist_roll.pos":    0.0,
+    "gripper.pos":       GRIPPER_FIXED_POS,
+}
 
 
 def set_seed_everywhere(seed: int) -> None:
@@ -159,6 +165,7 @@ class VAMInference:
             joint_names=JOINT_NAMES,
         )
 
+        # TODO: for future, we will precompute the embeddings, save them and load them here
         if PROMPT_EMBEDDINGS_PATH.exists():
             self._prompt_embeddings = torch.load(PROMPT_EMBEDDINGS_PATH)
             print("Loaded saved T5 prompt embeddings.")
@@ -396,6 +403,13 @@ def send_action(robot: SO101Follower, action: np.ndarray) -> None:
     robot.send_action(action)
 
 
+def reset_robot_to_start(robot: SO101Follower) -> None:
+    """Move robot to start position before each attempt."""
+    print("Resetting robot to start position...")
+    robot.send_action(START_POSITION)
+    time.sleep(2.0)  # wait for it to actually move
+
+
 def object_in_target_circle(image: np.ndarray) -> bool:
     """
     Detect if the pushed object has reached the target circle.
@@ -432,11 +446,26 @@ def run_attempt(
     """
     Execute one pushing attempt. Returns (success, replay_frames).
     """
+
+    # emergency stop listener
+    stop_event = threading.Event()
+    def on_press(key):
+        if key == keyboard.Key.esc:  # ESC pentru emergency stop
+            stop_event.set()
+            return False
+    
+    listener = keyboard.Listener(on_press=on_press)
+    listener.start()
+
     replay_images: list[np.ndarray] = []
     success = False
     step_dt = 1.0 / control_hz
 
     for step_idx in range(max_steps):
+        if stop_event.is_set():
+            print("Emergency stop triggered! Ending attempt.")
+            break
+
         t_start = time.time()
 
         image = get_robot_image(robot)
@@ -455,6 +484,8 @@ def run_attempt(
         sleep_time = step_dt - elapsed
         if sleep_time > 0:
             time.sleep(sleep_time)
+
+    listener.stop()
 
     return success, replay_images
 
@@ -535,6 +566,10 @@ def run_pushing_eval(
 
     try:
         for attempt_idx in range(1, NUM_ATTEMPTS + 1):
+            # for now, manually reset the scene before each attempt; 
+            # automated reset logic to a fixed initial position, although the object still needs manual replacement
+            # TODO: tune angles and use the automatic reset
+            reset_robot_to_start(robot)
             input(
                 f"\n[Attempt {attempt_idx}/{NUM_ATTEMPTS}] "
                 "Place object in start circle, then press Enter..."
