@@ -59,15 +59,24 @@ train_datasets: dict[str, Dataset_] = {
         include_only_with_substrings=["libero_object", "agentview"],
         obs_history=5,
     ),
+<<<<<<< Updated upstream
     "rl_group13": L(Dataset)(
+=======
+    "so-101": L(Dataset)( # TODO - check the parameters here!
+>>>>>>> Stashed changes
         dataset_dir=...,
         num_frames=61,
         video_size=[480, 640],
         data_fps=30.0,
         is_val=False,
+<<<<<<< Updated upstream
         include_only_with_substrings=[],
         obs_history=5,
     ),
+=======
+        obs_history=5,
+    )
+>>>>>>> Stashed changes
 }
 
 val_datasets: dict[str, Dataset_] = {}
