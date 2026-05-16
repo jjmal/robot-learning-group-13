@@ -22,27 +22,23 @@ import cv2
 import threading
 from pynput import keyboard
 
-# TODO: double check if model. is needed in front
-from model.cosmos_predict2.configs.config import make_config
-from model.cosmos_predict2.data.action.utils import extract_normalization_types
-from model.cosmos_predict2.pipelines.video2world import Video2WorldPipeline
-from model.cosmos_predict2.pipelines.video2world2action import Video2World2ActionPipeline
-from model.cosmos_predict2.pipelines.world2action import World2ActionPipeline
+from cosmos_predict2.configs.config import make_config
+from cosmos_predict2.data.action.utils import extract_normalization_types
+from cosmos_predict2.pipelines.video2world import Video2WorldPipeline
+from cosmos_predict2.pipelines.video2world2action import Video2World2ActionPipeline
+from cosmos_predict2.pipelines.world2action import World2ActionPipeline
 from imaginaire.lazy_config import instantiate
 from imaginaire.utils.config_helper import override
 
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
-from lerobot.model.kinematics import RobotKinematics
-from lerobot.robots.so_follower.robot_kinematic_processor import InverseKinematicsEEToJoints
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
-
 
 from prompts import TASK_PROMPTS
 
 # TODO: adjust constants as needed
 MAX_STEPS_PER_ATTEMPT = 200
 
-PROMPT_EMBEDDINGS_PATH = Path("../../checkpoints/prompt_embeddings.pt")
+PROMPT_EMBEDDINGS_PATH = Path("../../model/checkpoints/prompt_embeddings.pt")
 
 CAMERA_HEIGHT = 480 # actual camera resolution
 CAMERA_WIDTH = 640
@@ -69,9 +65,9 @@ OBJECT_HSV_UPPER = np.array([255, 255, 255])
 
 START_POSITION = {
     "shoulder_pan.pos":  0.0,
-    "shoulder_lift.pos": -90.0,  # TODO: tune these starting joint angles
+    "shoulder_lift.pos": -90.0,
     "elbow_flex.pos":    90.0,
-    "wrist_flex.pos":    0.0,
+    "wrist_flex.pos":    45.0,
     "wrist_roll.pos":    0.0,
     "gripper.pos":       GRIPPER_FIXED_POS,
 }
@@ -166,16 +162,6 @@ class VAMInference:
         self.num_execute_actions = num_execute_actions
         self.num_sampling_steps = 35
         self.rollout_dir = rollout_dir
-
-        # TODO:
-        # Forward kinematics: joint angles -> EEF pose
-        # they train on EEF pose, but the robot gives joint angles, so we need FK to convert
-        # also must match the dataset rep
-        self.kinematics = RobotKinematics(
-            urdf_path=str(URDF_PATH),
-            target_frame_name="gripper_frame_link",
-            joint_names=JOINT_NAMES,
-        )
 
         # FAKE embeddings - only for testing pipeline, NOT for real inference
         self._prompt_embeddings = {
@@ -275,36 +261,7 @@ class VAMInference:
 
     # State: joint angles -> 10-dim vector [xyz(3) + rot6d(6) + gripper(1)]
     def _state_from_joints(self, joint_angles: np.ndarray) -> np.ndarray:
-        """
-        Convert 6 joint angles (degrees, from LeRobot) to the 10-dim state vector
-        the model expects: [eef_xyz(3) + rot6d(6) + gripper(1)].
-        """
-        # # degrees -> radians, build dict for FK
-        # joint_dict = {
-        #     name: np.deg2rad(val)
-        #     for name, val in zip(JOINT_NAMES, joint_angles)
-        # }
-
-        # # Forward kinematics -> 4x4 EEF transform
-        # fk_poses = self.kinematics.forward_kinematics(joint_dict)
-        # eef_matrix = fk_poses["gripper_frame_link"]  # (4, 4)
-
-        # eef_pos = eef_matrix[:3, 3]                  # (3,)
-        # rot_6d = eef_matrix[:3, :3][:2].reshape(6,)  # first two rows of R -> (6,)
-
-        # # Typical SO-101: ~0 (closed) to ~100 degrees (open) -> map to [-1, 1]
-        # gripper_raw = joint_angles[-1]
-        # gripper = np.clip(gripper_raw / 50.0 - 1.0, -1.0, 1.0)
-
-        # return np.concatenate([eef_pos, rot_6d, [gripper]]).astype(np.float32)
-
-        # eef_matrix = self.kinematics.forward_kinematics(joint_angles)  # use directly
-        eef_matrix = self.kinematics.forward_kinematics(joint_angles.astype(np.float64))
-        eef_pos = eef_matrix[:3, 3]
-        rot_6d = eef_matrix[:3, :3][:2].reshape(6,)
-        # gripper = np.clip(joint_angles[-1] / 50.0 - 1.0, -1.0, 1.0) # [0,100] -> [-1,1]; remove gripper anyways
-        # return np.concatenate([eef_pos, rot_6d, [gripper]]).astype(np.float32)
-        return np.concatenate([eef_pos, rot_6d]).astype(np.float32)
+        return joint_angles[:6].astype(np.float32)
 
     # Action conversion - same as before
     @staticmethod
@@ -320,43 +277,16 @@ class VAMInference:
 
     def _convert_action(self, action: np.ndarray, current_joints: np.ndarray) -> np.ndarray:
         """
-        Convert model output [xyz(3) + rot6d(6) + gripper(1)] to 
-        joint position dict accepted by LeRobot SO-101.
-
-        Prev: to [delta_xyz(3) + rotvec(3) + gripper(1)].
+        Model outputs 6 joint angles directly (degrees) — send straight to robot.
         """
-        delta_pos = action[:3]
-        rot_matrix = self._matrix_from_6d(action[3:9])
-
-        # FK to get current EEF pose
-        # eef_current = self.kinematics.forward_kinematics(current_joints)  # 4x4
-        eef_current = self.kinematics.forward_kinematics(current_joints.astype(np.float64))
-
-        # target EEF = current EEF + delta_pos
-        eef_target = eef_current.copy()
-        eef_target[:3, 3] += delta_pos
-        eef_target[:3, :3] = rot_matrix
-        
-        # IK: target EEF -> joint positions
-        joint_positions = self.kinematics.inverse_kinematics(
-            current_joint_pos=current_joints.astype(np.float64),  # degrees
-            desired_ee_pose=eef_target,        # 4x4
-        )  # returns degrees
-        
-        # remove gripper
-        # gripper_pos = float(np.clip((np.sign(action[9]) + 1) * 50.0, 0.0, 100.0))
-        gripper_pos = float(current_joints[-1])  # keep gripper as it is
-
         return {
-            "shoulder_pan.pos":  float(joint_positions[0]),
-            "shoulder_lift.pos": float(joint_positions[1]),
-            "elbow_flex.pos":    float(joint_positions[2]),
-            "wrist_flex.pos":    float(joint_positions[3]),
-            "wrist_roll.pos":    float(joint_positions[4]),
-            # "gripper.pos":       gripper_pos,
+            "shoulder_pan.pos":  float(action[0]),
+            "shoulder_lift.pos": float(action[1]),
+            "elbow_flex.pos":    float(action[2]),
+            "wrist_flex.pos":    float(action[3]),
+            "wrist_roll.pos":    float(action[4]),
             "gripper.pos":       GRIPPER_FIXED_POS,
         }
-    
     
     # image processing - same as before
     def _process_image(self, image: np.ndarray) -> np.ndarray:
@@ -402,21 +332,21 @@ class VAMInference:
 #     print(f"Robot connected on {port}, camera on index {camera_index}")
 #     return robot
 
-def connect_robot(port: str, camera_index: int = 0) -> SO101Follower:
+def connect_robot(port: str, camera_index: int = 1) -> SO101Follower:
     config = SO101FollowerConfig(
         port=port,
         id="so101_pusher",
-        cameras={}  # fara camera in LeRobot
+        cameras={}
     )
     robot = SO101Follower(config)
     robot.connect()
-    init_camera(camera_index)  # initializezi separat
+    init_camera(camera_index)
     print(f"Robot connected on {port}")
     return robot
 
 _camera = None
 
-def init_camera(camera_index: int = 0) -> cv2.VideoCapture:
+def init_camera(camera_index: int = 1) -> cv2.VideoCapture:
     global _camera
     _camera = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
     _camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
@@ -443,7 +373,6 @@ def get_robot_image(robot: SO101Follower) -> np.ndarray:
 #     Read one RGB frame from the robot camera.
 #     """
 #     obs = robot.get_observation()
-#     # TODO: adjust key if your camera has a different name
 #     image = obs["front"]
 #     if image.shape != (CAMERA_HEIGHT, CAMERA_WIDTH, 3):
 #         raise ValueError(f"Unexpected image shape {image.shape}.")
@@ -456,7 +385,6 @@ def get_joint_angles(robot: SO101Follower) -> np.ndarray:
     Returns float32 array of shape (6,).
     """
     obs = robot.get_observation()
-    # TODO: adjust key if needed
     return np.array([
         obs["shoulder_pan.pos"],
         obs["shoulder_lift.pos"],
@@ -479,11 +407,24 @@ def send_action(robot: SO101Follower, action: np.ndarray) -> None:
     robot.send_action(action)
 
 
-def reset_robot_to_start(robot: SO101Follower) -> None:
-    """Move robot to start position before each attempt."""
+def reset_robot_to_start(robot: SO101Follower, steps: int = 50, hz: float = 25.0) -> None:
+    """Smoothly move robot to start position."""
     print("Resetting robot to start position...")
-    robot.send_action(START_POSITION)
-    time.sleep(2.0)  # wait for it to actually move
+    
+    obs = robot.get_observation()
+    current = {k: obs[k] for k in START_POSITION.keys()}
+    
+    dt = 1.0 / hz
+    for i in range(1, steps + 1):
+        alpha = i / steps
+        interp = {
+            k: current[k] + alpha * (START_POSITION[k] - current[k])
+            for k in START_POSITION.keys()
+        }
+        robot.send_action(interp)
+        time.sleep(dt)
+    
+    print("Reset complete.")
 
 
 def object_in_target_circle(image: np.ndarray) -> bool:
@@ -551,10 +492,10 @@ def run_attempt(
         action = policy.step(image, policy._current_task, joint_angles)
         send_action(robot, action)
 
-        if object_in_target_circle(image):
-            success = True
-            print(f"Goal reached at step {step_idx}!")
-            break
+        # if object_in_target_circle(image):
+        #     success = True
+        #     print(f"Goal reached at step {step_idx}!")
+        #     break
 
         elapsed = time.time() - t_start
         sleep_time = step_dt - elapsed
@@ -593,12 +534,12 @@ def run_pushing_eval(
     dataset_statistics_path: str,
     task: str,
     robot_port: str = "/dev/ttyACM0", # "/dev/ttyUSB0",
-    camera_index: int = 0,
+    camera_index: int = 1,
     img_horizon: int = 5,
     lowdim_horizon: int = 1,
     stop_video_denoising_step: int = 10,
-    num_execute_actions: int = 8,
-    control_hz: float = 10.0,
+    num_execute_actions: int = 32, #8, #TODO: double check the horizon of the action chunk + hz
+    control_hz: float = 5.0, # 10.0,
     save_video: bool = True,
     seed: int = 42,
 ) -> None:
@@ -644,10 +585,7 @@ def run_pushing_eval(
 
     try:
         for attempt_idx in range(1, NUM_ATTEMPTS + 1):
-            # for now, manually reset the scene before each attempt; 
-            # automated reset logic to a fixed initial position, although the object still needs manual replacement
-            # TODO: tune angles and use the automatic reset
-            # reset_robot_to_start(robot)
+            reset_robot_to_start(robot)
             input(
                 f"\n[Attempt {attempt_idx}/{NUM_ATTEMPTS}] "
                 "Place object in start circle, then press Enter..."
