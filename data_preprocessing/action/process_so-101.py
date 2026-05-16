@@ -14,9 +14,9 @@ An episode is identified by the shared stem across all three files, e.g.:
 Output: one zarr group per episode at <output-dir>/<stem>.zarr containing:
     workspace_rgb              (T_vid, H, W, 3)  uint8 — raw video frames
     workspace_rgb_timestamps   (T_vid,)           int64 — nanoseconds
-    actions                    (T_act, 6)         float32 — first 6 dims of action
+    actions                    (T_act, 5)         float32 — first 5 dims of action
     actions_timestamps         (T_act,)           int64 — nanoseconds
-    observation_state          (T_act, 6)         float32 — first 6 dims of obs state
+    observation_state          (T_act, 5)         float32 — first 5 dims of obs state
     observation_state_timestamps (T_act,)         int64 — nanoseconds
     language_instruction (1,)                     str - prompts
 
@@ -70,7 +70,7 @@ def read_vector_column(df: pd.DataFrame, col: str) -> np.ndarray:
     sample = df[col].iloc[0]
     if hasattr(sample, "__len__"):
         return np.stack(df[col].values).astype(np.float32)
-    # Scalar column (shouldn't happen for 6-D vectors, but guard anyway)
+    # Scalar column (shouldn't happen for 5-D vectors, but guard anyway)
     return df[col].values.astype(np.float32)[:, np.newaxis]
 
 
@@ -138,9 +138,9 @@ def process_episode(
         timestamps_ns = (np.arange(len(df), dtype=np.float64) / action_freq * S_TO_NS).astype(np.int64)
 
     
-    action = read_vector_column(df, "action")[:, :6]
+    action = read_vector_column(df, "action")[:, :5]
 
-    obs_state = read_vector_column(df, "observation.state")[:, :6]
+    obs_state = read_vector_column(df, "observation.state")[:, :5]
 
     T_act = len(action)
     assert len(timestamps_ns) == T_act, (
@@ -176,7 +176,7 @@ def process_episode(
     root.array(
         "actions",
         action,
-        chunks=(T_act, 6),
+        chunks=(T_act, 5),
         dtype=np.float32,
         compressor=TRAJ_COMPRESSOR,
     )
@@ -192,7 +192,7 @@ def process_episode(
     root.array(
         "observation_state",
         obs_state,
-        chunks=(T_act, 6),
+        chunks=(T_act, 5),
         dtype=np.float32,
         compressor=TRAJ_COMPRESSOR,
     )
@@ -223,10 +223,10 @@ def main() -> None:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--data-root",
+        "--data-dir",
         type=Path,
         required=True,
-        help="Root folder containing action/, t5_xxl/, and video/ subdirectories.",
+        help="Root folder containing action/, and video/ subdirectories.",
     )
     parser.add_argument(
         "--output-dir",
@@ -259,8 +259,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    action_dir = args.data_root / "action"
-    video_dir = args.data_root / "video"
+    action_dir = args.data_dir / "action"
+    video_dir = args.data_dir / "video"
 
     for d in (action_dir, video_dir):
         if not d.is_dir():
