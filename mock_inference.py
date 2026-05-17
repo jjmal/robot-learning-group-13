@@ -236,5 +236,41 @@ def main():
     print(f"  Control freq (approx): {1000 / (backbone_ms + action_ms):.2f} Hz")
 
 
+# ── Real robot control loop (action chunking) ─────────────────────────────
+#
+# DO NOT re-run the backbone every step — it takes ~seconds.
+# Instead: run backbone once, execute all 90 predicted actions, then repeat.
+#
+# ACTION_FREQ = 30  # Hz, robot control frequency
+# CHUNK_SIZE  = 90  # steps predicted per backbone call (3 seconds)
+#
+# lang_emb = np.load(LANG_EMB_PATH)
+# backbone, action_pipe = load_backbone(), load_action_head()
+# load_norm_stats(action_pipe)
+# video_sigma = torch.tensor([[VIDEO_SIGMA]], device="cuda", dtype=torch.bfloat16)
+#
+# while task_not_done:
+#     # 1. collect last 61 frames from camera buffer (5 obs + 56 action frames)
+#     frames = get_camera_frames()          # (61, H, W, 3) uint8
+#     state  = get_robot_state()            # (1, 1, 5) torch bfloat16 on cuda
+#
+#     # 2. backbone: slow, run once per chunk
+#     crossattn_emb = backbone_forward(backbone, frames, lang_emb)  # (1, 1920, 2048)
+#
+#     # 3. action head: fast, predicts full 90-step chunk at once
+#     actions = action_pipe(
+#         state_B_HO_O=state,
+#         crossattn_emb=crossattn_emb,
+#         context_timesteps_B_1=video_sigma,
+#     )  # (1, 90, 5)
+#
+#     # 4. execute all 90 actions on the robot at 30 Hz
+#     for action in actions[0]:             # action: (5,) tensor
+#         robot.send_joint_command(action.cpu().numpy())
+#         time.sleep(1 / ACTION_FREQ)
+#
+#     # then loop: get new frames, run backbone again
+
+
 if __name__ == "__main__":
     main()
