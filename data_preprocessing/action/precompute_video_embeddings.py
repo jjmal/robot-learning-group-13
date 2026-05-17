@@ -37,6 +37,7 @@ NUM_OBS_FRAMES = 5
 NUM_ACTION_FRAMES = 56
 TOTAL_FRAMES = NUM_OBS_FRAMES + NUM_ACTION_FRAMES  # 61
 XATTN_LAYER_IDX = 20
+CROSSATTN_POOL_FACTOR = 10  # pool 19200 → 1920 tokens before saving
 
 
 def load_pipeline(dit_path: str) -> Video2WorldPipeline:
@@ -96,7 +97,9 @@ def compute_crossattn_emb(
     crossattn_emb = world_pred.hidden_states[XATTN_LAYER_IDX]  # (1, T, H, W, D)
     B, T, H, W, D = crossattn_emb.shape
     crossattn_emb = crossattn_emb.reshape(B, T * H * W, D)
-    return crossattn_emb.squeeze(0).cpu().float().numpy()  # (N_tokens, D)
+    # Spatial pooling: group consecutive tokens and average (10x reduction: 19200 → 1920)
+    crossattn_emb = crossattn_emb.reshape(B, CROSSATTN_POOL_FACTOR, T * H * W // CROSSATTN_POOL_FACTOR, D).mean(dim=1)
+    return crossattn_emb.squeeze(0).cpu().float().numpy()  # (N_tokens // pool_factor, D)
 
 
 def process_episode(
@@ -106,6 +109,11 @@ def process_episode(
     sigma: float,
 ) -> None:
     with zarr.open(str(zarr_path), "r") as root:
+        if ("crossattn_emb" in root
+                and root.attrs.get("crossattn_stride") == stride
+                and root.attrs.get("crossattn_sigma") == sigma
+                and root.attrs.get("crossattn_pool_factor") == CROSSATTN_POOL_FACTOR):
+            return  # already computed with same settings
         workspace_rgb = root["workspace_rgb"][:]       # (N, H, W, 3) uint8
         language_embedding = root["language_embedding"][:]  # (1, 512, 1024)
 
@@ -142,6 +150,7 @@ def process_episode(
         root.attrs["crossattn_sigma"] = sigma
         root.attrs["crossattn_layer_idx"] = XATTN_LAYER_IDX
         root.attrs["crossattn_stride"] = stride
+        root.attrs["crossattn_pool_factor"] = CROSSATTN_POOL_FACTOR
 
     print(f"{zarr_path.name}: saved {len(starts)} windows, shape {embeddings_arr.shape}")
 

@@ -9,7 +9,7 @@ policy_io:
       target_frequency: 5
       shift_right_by: 0.2
     actions:
-      horizon: 60
+      horizon: 90
       normalization_type: ${NormalizationType:VARIANCE}
       target_repr: ${LieRepr:ABSOLUTE}
       target_frequency: 30

@@ -5,4 +5,4 @@ defaults:
 
 dataset:
   dataset:
-    data_dir: /ephemeral/data_processed
+    data_dir: /ephemeral/rl-group13-processed

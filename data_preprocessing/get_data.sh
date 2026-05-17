@@ -4,7 +4,7 @@ NAME="${1}"
 TASK="${2}"
 START="${3}"
 END="${4}"
-LOCAL_DIR="$(pwd)/data_raw"
+LOCAL_DIR="/ephemeral/data_raw"
 
 
 if [[ -z "NAME" || -z "$TASK" || -z "$START" || -z "$END" ]]; then

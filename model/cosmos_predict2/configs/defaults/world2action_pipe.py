@@ -23,9 +23,9 @@ ACTION_DECODER_NETS = {
         sac_config=SACConfig(mode="none", every_n_blocks=1),
     ),
     "rl_group13": L(VarNoiseWorld2ActionDIT)(
-        max_horizon=61,
-        in_channels=6,
-        out_channels=6,
+        max_horizon=91,
+        in_channels=5,
+        out_channels=5,
         model_channels=512,
         num_blocks=10,
         num_heads=8,
