@@ -104,7 +104,7 @@ def load_video2world2action_pipeline(
         device="cuda",
         torch_dtype=dtype,
         load_ema_to_reg=False,
-        use_text_encoder=False, # TODO: let it have the 45GB text encoder as well 
+        use_text_encoder=False, # TODO: DO NOT LET IT HAVE THE TEXT ENCODER AS WELL (MORE STARTING TIME)
     )
 
     print("Loading action decoder...")
@@ -164,24 +164,24 @@ class VAMInference:
         self.rollout_dir = rollout_dir
 
         # FAKE embeddings - only for testing pipeline, NOT for real inference
-        self._prompt_embeddings = {
-            task: torch.randn(1, 512, 1024, dtype=torch.bfloat16)
-            for task in TASK_PROMPTS
-        }
-        print("WARNING: Using FAKE prompt embeddings - for testing only!")
+        # self._prompt_embeddings = {
+        #     task: torch.randn(1, 512, 1024, dtype=torch.bfloat16)
+        #     for task in TASK_PROMPTS
+        # }
+        # print("WARNING: Using FAKE prompt embeddings - for testing only!")
 
         # # TODO: for future, we will precompute the embeddings, save them and load them here
-        # if PROMPT_EMBEDDINGS_PATH.exists():
-        #     self._prompt_embeddings = torch.load(PROMPT_EMBEDDINGS_PATH)
-        #     print("Loaded saved T5 prompt embeddings.")
-        # else:
-        #     print("Pre-computing T5 embeddings for all tasks...")
-        #     self._prompt_embeddings = {
-        #         task: self.model.video2world_pipeline.encode_prompt(prompt).to(dtype=torch.bfloat16)
-        #         for task, prompt in TASK_PROMPTS.items()
-        #     }
-        #     torch.save(self._prompt_embeddings, PROMPT_EMBEDDINGS_PATH)
-        #     print("Saved T5 prompt embeddings.")
+        if PROMPT_EMBEDDINGS_PATH.exists():
+            self._prompt_embeddings = torch.load(PROMPT_EMBEDDINGS_PATH)
+            print("Loaded saved T5 prompt embeddings.")
+        else:
+            print("Pre-computing T5 embeddings for all tasks...")
+            self._prompt_embeddings = {
+                task: self.model.video2world_pipeline.encode_prompt(prompt).to(dtype=torch.bfloat16)
+                for task, prompt in TASK_PROMPTS.items()
+            }
+            torch.save(self._prompt_embeddings, PROMPT_EMBEDDINGS_PATH)
+            print("Saved T5 prompt embeddings.")
         
         self._current_task = None
         self.prompt_embedding = None
