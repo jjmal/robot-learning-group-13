@@ -30,14 +30,35 @@ JOINT_NAMES = [
     "gripper",
 ]
 
+# START_POSITION = {
+#     "shoulder_pan.pos":   0.0,
+#     "shoulder_lift.pos": -90.0,
+#     "elbow_flex.pos":     90.0,
+#     "wrist_flex.pos":     45.0,
+#     "wrist_roll.pos":      0.0,
+#     "gripper.pos":         0.0,
+# }
+
+# from training data
 START_POSITION = {
-    "shoulder_pan.pos":   0.0,
-    "shoulder_lift.pos": -90.0,
-    "elbow_flex.pos":     90.0,
-    "wrist_flex.pos":     45.0,
-    "wrist_roll.pos":      0.0,
-    "gripper.pos":         0.0,
+    "shoulder_pan.pos":   2.8,
+    "shoulder_lift.pos": -101.5,
+    "elbow_flex.pos":     97.2,
+    "wrist_flex.pos":     52.5,
+    "wrist_roll.pos":    -10.1,
+    "gripper.pos":         2.1,
 }
+
+# START_POSITION = {
+#     "shoulder_pan.pos":   -41.0,
+#     "shoulder_lift.pos": 32.5,
+#     "elbow_flex.pos":     -12.1875,
+#     "wrist_flex.pos":     68.0,
+#     "wrist_roll.pos":    -34.25,
+#     "gripper.pos":         2.1,
+# }
+
+#  [-41.      32.5    -12.1875  68.     -34.25  ]
 
 # ── globals set at startup ────────────────────────────────────────────────────
 robot: SO101Follower = None
