@@ -4,13 +4,28 @@
 Fine-tuning the Cosmos Predict2 video2world backbone and action head for SO-100 robot manipulation.
 Task: "push the white ball into the white circle"
 
+## Current Status (as of 2026-05-19)
+- Backbone fine-tuned for 20K steps (`iter_000020000_fused.pt`) — uploaded to `MKorniak/rl-group13-checkpoints`
+- Action head trained for 25K steps — checkpoint at `/ephemeral/training_output/vam/rl_group13/w2a_rl_group13/checkpoints/model/iter_000025000.pt`
+- Precomputing `crossattn_emb` with stride=1 on ep0–99 (running on main instance)
+- Second instance processing ep100–399 from raw data (Scaevitas t1-e21 to t1-e40 + oscros t1-e1 to t1-e20)
+- After precompute: retrain action head with all embeddings
+
+## HuggingFace Resources (MKorniak)
+- `MKorniak/rl-group13-checkpoints` (model repo):
+  - `backbone/iter_000020000_fused.pt` — fine-tuned backbone (20K steps)
+  - `action_head/iter_000025000.pt` — action head (25K steps)
+  - `norm_stats/stats.json` — normalization statistics
+  - `language_embedding.npy` — T5 embedding for prompt (shape: 1, 512, 1024, float16)
+
 ## Environment
 - Working directory: `/home/ubuntu/robot-learning-group-13`
 - Model code: `model/`
 - Venv: `source model/.venv/bin/activate` (always activate before running any python)
+- Setup venv: `cd model && uv sync --extra cu126`
 - Large data/checkpoints go on `/ephemeral` (wiped on reboot, 500GB)
 - Root disk is nearly full — never write large files outside `/ephemeral`
-- GPU: A100 80GB on Brev (`ubuntu@brev-cfcpd4pd9`)
+- GPU: A100 80GB on Brev
 - Use `tmux` to keep training alive after SSH disconnect
 
 ## Pipeline Overview
@@ -74,20 +89,29 @@ The action head training runs the 2B backbone every step — very slow. Pre-comp
 cd /home/ubuntu/robot-learning-group-13
 python -m data_preprocessing.action.precompute_video_embeddings \
   --dataset-path /ephemeral/rl-group13-processed \
-  --dit-path /ephemeral/training_output/posttraining/video2world/v2w_rl_group13_lora_rank256_lr1.778e-04_bsz32/checkpoints/model/iter_000000800_fused.pt \
+  --dit-path /ephemeral/training_output/posttraining/video2world/v2w_rl_group13_lora_rank256_lr1.778e-04_bsz32/checkpoints/model/iter_000020000_fused.pt \
   --stride 1 \
   --sigma 0.4
 ```
 
-- `--stride 1`: maximum data → ~190 windows/episode (~3hr precompute, run in tmux)
+- `--stride 1`: maximum data → ~360 windows/episode, ~5 min/episode (run in tmux)
 - `--sigma 0.4`: geometric mean of training sigma range [0.002, 80.0]
-- Omit `--dit-path` to use base pretrained model instead of fine-tuned
-- Saves `crossattn_emb` (n_windows, N_tokens, D) and `crossattn_emb_window_starts` to each zarr
+- `--max-episodes N`: only process first N episodes (sorted numerically)
+- `--start-episode N`: skip first N episodes (for parallel runs across instances)
+- `--batch-size N`: batch multiple windows (no speedup observed — GPU already saturated at bsz=1)
+- Embeddings are **10× pooled**: 19200 → 1920 tokens before saving (~6MB/window compressed)
+- Saves `crossattn_emb` (n_windows, 1920, 2048) and `crossattn_emb_window_starts` to each zarr
 - Script: `data_preprocessing/action/precompute_video_embeddings.py`
+- Disk usage: ~6MB/window × ~360 windows/ep × 100 episodes ≈ 219GB for 100 episodes at stride=1
+
+**Parallel precompute across two instances:**
+- Instance 1: `--max-episodes 100` (ep0–99)
+- Instance 2: `--start-episode 100` (ep100–end)
 
 ### 4. Action head training
-**Data**: `/ephemeral/rl-group13-processed` (6 episodes currently, needs more)
-**Config**: SO-100-specific `policy_io` yaml already created (`rl_group13`) — 6-dim actions at 30Hz
+**Data**: `/ephemeral/rl-group13-processed` — 400 episodes, 5-dim actions (gripper dropped), 30Hz
+**Config**: `rl_group13` — smaller network than libero (~10× fewer params: 512 channels, 10 blocks)
+**Action horizon**: 90 steps (3 seconds at 30Hz)
 
 **Training command** (from `model/`):
 ```bash
@@ -107,8 +131,9 @@ torchrun --nproc_per_node=1 --master_port=12342 \
 
 - Use port `12342` (backbone training uses `12341`)
 - `trainer.run_validation=False`: validation runs the full 2B backbone on every val sample (~2min each) — skip it during training
-- Checkpoints saved to `/ephemeral/training_output/posttraining/world2action/w2a_rl_group13/`
+- Checkpoints saved to `/ephemeral/training_output/vam/rl_group13/w2a_rl_group13/checkpoints/model/`
 - Resume: run the exact same command — auto-detects latest checkpoint
+- Previously trained for 25K steps
 
 **Gotchas**:
 - Precomputed `crossattn_emb` is loaded automatically from zarr (configured in `rl_group13` dataset config) — training skips the 2B backbone forward pass each step, making training fast
@@ -117,11 +142,16 @@ torchrun --nproc_per_node=1 --master_port=12342 \
 - `ep13.zarr` warning about missing `workspace_rgb_timestamps` is harmless — that episode is skipped
 
 ## Data Notes
-- SO-100 robot data: 30Hz, 6-dim actions, 6-dim proprioception, 480×640 RGB
-- Dataset on HuggingFace: `smoothmoth121/rl-group13-processed` (zarr format)
-- Downloading zarr from HuggingFace hits rate limits fast (1000 req/5min) — zip before uploading
+- SO-100 robot data: 30Hz, 6-dim actions (gripper dropped → 5-dim), 6-dim proprioception (→ 5-dim), 480×640 RGB
+- Raw data sources: `oscros/t1-e1` to `t1-e20` (200 episodes) + `Scaevitas/t1-e21` to `t1-e40` (200 episodes) = 400 total
+- Processed zarr: `/ephemeral/rl-group13-processed/ep0.zarr` ... `ep399.zarr`
+- Download script: `bash data_preprocessing/get_data.sh <org> 1 <start> <end>`
+- Zarr conversion: `python -m data_preprocessing.action.convert_lerobot_to_zarr`
+- Video conversion: `python data_preprocessing/video/convert_lerobot_to_backbone.py`
+- HuggingFace upload/download: zip first to avoid rate limits — `zip -r data.zip dir/ && hf upload repo data.zip`
+- Scaevitas uses `observation.images.top` camera key (oscros uses `observation.images.front`) — auto-detected in conversion script
+- Actions/obs are 5-dim (gripper col index 5 dropped at conversion time with `[:, :5]`)
 - Visual issue: black robot on black mat — poor contrast hurts learning. Consider colored tape on joints.
-- Currently only 6 episodes — need significantly more data
 
 ## Video Generation (evaluation)
 ```bash
@@ -139,15 +169,27 @@ python scripts/run_video2world.py \
 - `--use_first_frames`: conditions on first 5 frames (start of task) instead of last 5 (end, static)
 - Base model (no `--dit_path`): uses `checkpoints/video_backbone/v2w_pretrained_cosmos.pt`
 
+## Inference
+See `mock_inference.py` in the repo root — loads all 4 artifacts and runs a full forward pass with fake inputs. Includes a commented real robot control loop showing action chunking pattern.
+
+**Action chunking**: run backbone once → predict 90 actions → execute all 90 at 30Hz → repeat. Do NOT re-run backbone every step.
+
+**4 artifacts needed for inference**:
+1. Backbone: `iter_000020000_fused.pt` (from `MKorniak/rl-group13-checkpoints`)
+2. Action head: `iter_000025000.pt` (from `MKorniak/rl-group13-checkpoints`)
+3. Norm stats: `stats.json` (from `MKorniak/rl-group13-checkpoints`)
+4. Language embedding: `language_embedding.npy` (from `MKorniak/rl-group13-checkpoints`, shape: 1×512×1024 float16)
+
 ## Key Files
 - `model/cosmos_predict2/configs/defaults/data_video.py` — register new video datasets
 - `model/cosmos_predict2/configs/defaults/video2world_model.py` — model registration
-- `model/cosmos_predict2/configs/dataloading/policy_io/rl_group13.yaml` — SO-100 action/obs horizons (6-dim, 30Hz)
+- `model/cosmos_predict2/configs/dataloading/policy_io/rl_group13.yaml` — SO-100 action/obs horizons (5-dim, 30Hz, 90-step horizon)
 - `model/cosmos_predict2/configs/dataloading/dataset/rl_group13.yaml` — SO-100 dataset config (has `load_precomputed_crossattn_emb: True`)
 - `model/cosmos_predict2/configs/dataloading/rl_group13.yaml` — top-level data config pointing to `/ephemeral/rl-group13-processed`
-- `model/cosmos_predict2/configs/defaults/world2action_pipe.py` — action head network configs (rl_group13: 6-dim in/out)
+- `model/cosmos_predict2/configs/defaults/world2action_pipe.py` — action head network configs (rl_group13: 5-dim in/out, 512 channels, 10 blocks)
 - `model/cosmos_predict2/configs/experiment/world2action.py` — action head experiment configs
 - `model/cosmos_predict2/models/world2action_model.py` — action head training logic (modified: uses precomputed crossattn_emb if in batch)
 - `model/cosmos_predict2/data/action/chunk_reader.py` — zarr data loader (modified: loads precomputed crossattn_emb)
 - `model/cosmos_predict2/pipelines/video2world.py` — video generation pipeline (modified: added `--use_first_frames`)
-- `data_preprocessing/action/precompute_video_embeddings.py` — precomputes crossattn_emb from backbone and saves to zarr
+- `data_preprocessing/action/precompute_video_embeddings.py` — precomputes crossattn_emb (with 10× pooling: 19200→1920 tokens) from backbone and saves to zarr
+- `mock_inference.py` — standalone inference test script (no robot needed)
