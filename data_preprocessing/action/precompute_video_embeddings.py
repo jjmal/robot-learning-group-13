@@ -56,20 +56,21 @@ def load_pipeline(dit_path: str) -> Video2WorldPipeline:
 
 
 @torch.no_grad()
-def compute_crossattn_emb(
+def compute_crossattn_emb_batch(
     pipe: Video2WorldPipeline,
-    frames_uint8: np.ndarray,   # (61, H, W, 3) uint8
+    frames_batch: np.ndarray,        # (B, 61, H, W, 3) uint8
     language_embedding: np.ndarray,  # (1, 512, 1024)
     sigma: float,
-) -> np.ndarray:
-    # (61, H, W, 3) -> (1, 3, 61, H, W) uint8
-    frames_t = torch.from_numpy(frames_uint8).permute(3, 0, 1, 2).unsqueeze(0)
-    frames_t = frames_t.to("cuda")
+) -> np.ndarray:                     # (B, 1920, 2048)
+    B = frames_batch.shape[0]
+    # (B, 61, H, W, 3) -> (B, 3, 61, H, W)
+    frames_t = torch.from_numpy(frames_batch).permute(0, 4, 1, 2, 3).to("cuda")
 
-    obs_frames = frames_t[:, :, :NUM_OBS_FRAMES, :, :]    # (1, 3, 5, H, W)
-    action_frames = frames_t[:, :, NUM_OBS_FRAMES:, :, :]  # (1, 3, 56, H, W)
+    obs_frames    = frames_t[:, :, :NUM_OBS_FRAMES, :, :]
+    action_frames = frames_t[:, :, NUM_OBS_FRAMES:, :, :]
 
     lang_emb = torch.from_numpy(language_embedding).to("cuda", dtype=torch.bfloat16)
+    lang_emb = lang_emb.expand(B, -1, -1)  # (B, 512, 1024)
 
     data_batch = {
         "obs/workspace_rgb": obs_frames,
@@ -81,7 +82,7 @@ def compute_crossattn_emb(
 
     _, video_latent, condition = pipe.get_mimic_data_and_condition(data_batch)
 
-    sigma_t = torch.tensor([[sigma]], device="cuda", dtype=torch.float32)
+    sigma_t = torch.tensor([[sigma]] * B, device="cuda", dtype=torch.float32)
     noise = torch.randn_like(video_latent)
     noisy_latent = video_latent + noise * rearrange(sigma_t, "b t -> b 1 t 1 1")
 
@@ -94,12 +95,21 @@ def compute_crossattn_emb(
         return_decoded_video=False,
     )
 
-    crossattn_emb = world_pred.hidden_states[XATTN_LAYER_IDX]  # (1, T, H, W, D)
-    B, T, H, W, D = crossattn_emb.shape
-    crossattn_emb = crossattn_emb.reshape(B, T * H * W, D)
-    # Spatial pooling: group consecutive tokens and average (10x reduction: 19200 → 1920)
-    crossattn_emb = crossattn_emb.reshape(B, CROSSATTN_POOL_FACTOR, T * H * W // CROSSATTN_POOL_FACTOR, D).mean(dim=1)
-    return crossattn_emb.squeeze(0).cpu().float().numpy()  # (N_tokens // pool_factor, D)
+    crossattn_emb = world_pred.hidden_states[XATTN_LAYER_IDX]  # (B, T, H, W, D)
+    B_, T, H, W, D = crossattn_emb.shape
+    crossattn_emb = crossattn_emb.reshape(B_, T * H * W, D)
+    crossattn_emb = crossattn_emb.reshape(B_, CROSSATTN_POOL_FACTOR, T * H * W // CROSSATTN_POOL_FACTOR, D).mean(dim=1)
+    return crossattn_emb.cpu().float().numpy()  # (B, 1920, 2048)
+
+
+@torch.no_grad()
+def compute_crossattn_emb(
+    pipe: Video2WorldPipeline,
+    frames_uint8: np.ndarray,   # (61, H, W, 3) uint8
+    language_embedding: np.ndarray,  # (1, 512, 1024)
+    sigma: float,
+) -> np.ndarray:
+    return compute_crossattn_emb_batch(pipe, frames_uint8[None], language_embedding, sigma)[0]
 
 
 def process_episode(
@@ -107,6 +117,7 @@ def process_episode(
     zarr_path: pathlib.Path,
     stride: int,
     sigma: float,
+    batch_size: int = 1,
 ) -> None:
     with zarr.open(str(zarr_path), "r") as root:
         if ("crossattn_emb" in root
@@ -125,10 +136,11 @@ def process_episode(
     starts = list(range(0, n_frames - TOTAL_FRAMES + 1, stride))
     embeddings = []
 
-    for start in tqdm(starts, desc=zarr_path.name, leave=False):
-        frames = workspace_rgb[start : start + TOTAL_FRAMES]
-        emb = compute_crossattn_emb(pipe, frames, language_embedding, sigma=sigma)
-        embeddings.append(emb)
+    for i in tqdm(range(0, len(starts), batch_size), desc=zarr_path.name, leave=False):
+        batch_starts = starts[i : i + batch_size]
+        frames_batch = np.stack([workspace_rgb[s : s + TOTAL_FRAMES] for s in batch_starts])
+        embs = compute_crossattn_emb_batch(pipe, frames_batch, language_embedding, sigma=sigma)
+        embeddings.extend(embs)
 
     embeddings_arr = np.stack(embeddings, axis=0)  # (n_windows, N_tokens, D)
     window_starts = np.array(starts, dtype=np.int32)
@@ -176,16 +188,37 @@ def main():
         default=0.4,
         help="Fixed noise level for embedding extraction. 0.4 = geometric mean of training range [0.002, 80.0].",
     )
+    parser.add_argument(
+        "--start-episode",
+        type=int,
+        default=0,
+        help="Skip the first N episodes (sorted by number). Useful for parallel runs across instances.",
+    )
+    parser.add_argument(
+        "--max-episodes",
+        type=int,
+        default=None,
+        help="Only process N episodes starting from --start-episode.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Number of windows to process in one backbone forward pass. Try 2 or 4 if VRAM allows.",
+    )
     args = parser.parse_args()
 
     print(f"Loading pipeline from: {args.dit_path}")
     pipe = load_pipeline(args.dit_path)
 
-    zarr_paths = sorted(args.dataset_path.glob("*.zarr"))
-    print(f"Found {len(zarr_paths)} episodes")
+    zarr_paths = sorted(args.dataset_path.glob("*.zarr"), key=lambda p: int(p.stem.replace("ep", "")))
+    zarr_paths = zarr_paths[args.start_episode:]
+    if args.max_episodes is not None:
+        zarr_paths = zarr_paths[: args.max_episodes]
+    print(f"Found {len(zarr_paths)} episodes to process")
 
     for zarr_path in zarr_paths:
-        process_episode(pipe, zarr_path, stride=args.stride, sigma=args.sigma)
+        process_episode(pipe, zarr_path, stride=args.stride, sigma=args.sigma, batch_size=args.batch_size)
 
     print("Done.")
 
