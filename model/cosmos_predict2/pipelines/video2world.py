@@ -433,7 +433,7 @@ class Video2WorldPipeline(BasePipeline):
             "obs/language_embedding": prompt_embedding
             if prompt_embedding is not None
             else self.encode_prompt(prompt).to(dtype=self.torch_dtype),
-            "fps": torch.randint(16, 32, (self.batch_size,)),  # Random FPS (might be used by model)
+            "fps": torch.full((self.batch_size,), 5.0),  # Match backbone fine-tuning fps (dataset_video.py hardcodes 5)
             "padding_mask": torch.zeros(self.batch_size, 1, H, W),  # Padding mask (assumed no padding here)
             "num_conditional_frames": num_latent_conditional_frames,  # Specify number of conditional frames
             "is_preprocessed": video.dtype != torch.uint8,

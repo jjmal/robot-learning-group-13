@@ -17,7 +17,6 @@ import time
 
 import numpy as np
 import torch
-from einops import rearrange
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent / "model"))
 
@@ -52,8 +51,13 @@ NUM_OBS_FRAMES = 5
 NUM_ACTION_FRAMES = 56
 TOTAL_FRAMES = NUM_OBS_FRAMES + NUM_ACTION_FRAMES  # 61
 XATTN_LAYER_IDX = 20
-CROSSATTN_POOL_FACTOR = 10   # 19200 → 1920 tokens
-VIDEO_SIGMA = 0.4
+VIDEO_SIGMA = 0.4            # training sigma (reference only)
+# Partial denoising: run 24 of 35 scheduler steps from pure noise.
+# scheduler.sigmas[24] ≈ 0.377 — closest step to training sigma 0.4.
+# This matches the paper (imagined future via partial denoising) instead of
+# the broken past-frames approach used previously.
+NUM_SAMPLING_STEPS = 35
+STOP_AFTER_STEP = 0          # τv=1: pure noise future, single DiT pass (Algorithm 1)
 OBS_DIM = 5
 ACTION_HORIZON = 90
 IMG_H, IMG_W = 480, 640
@@ -138,45 +142,33 @@ def load_norm_stats(pipe: World2ActionPipeline) -> None:
 @torch.no_grad()
 def backbone_forward(
     backbone: Video2WorldPipeline,
-    frames_uint8: np.ndarray,   # (61, H, W, 3)
-    lang_emb: np.ndarray,       # (1, 512, 1024)
-) -> torch.Tensor:
-    frames_t = torch.from_numpy(frames_uint8).permute(3, 0, 1, 2).unsqueeze(0).to("cuda")
-    obs_frames = frames_t[:, :, :NUM_OBS_FRAMES]
-    action_frames = frames_t[:, :, NUM_OBS_FRAMES:]
+    obs_frames_uint8: np.ndarray,   # (5, H, W, 3) — obs frames only
+    lang_emb: np.ndarray,           # (1, 512, 1024)
+) -> tuple[torch.Tensor, torch.Tensor]:
+    # (5, H, W, 3) uint8 → (1, 3, 5, H, W)
+    obs_t = torch.from_numpy(obs_frames_uint8).permute(3, 0, 1, 2).unsqueeze(0).to("cuda")
     lang_t = torch.from_numpy(lang_emb).to("cuda", dtype=torch.bfloat16)
 
-    data_batch = {
-        "obs/workspace_rgb": obs_frames,
-        "action/workspace_rgb": action_frames,
-        "obs/language_embedding": lang_t,
-        "num_conditional_frames": backbone.tokenizer.get_latent_num_frames(NUM_OBS_FRAMES),
-        "is_preprocessed": True,
-    }
-
-    _, video_latent, condition = backbone.get_mimic_data_and_condition(data_batch)
-
-    sigma_t = torch.tensor([[VIDEO_SIGMA]], device="cuda", dtype=torch.float32)
-    noise = torch.randn_like(video_latent)
-    noisy_latent = video_latent + noise * rearrange(sigma_t, "b t -> b 1 t 1 1")
-
-    world_pred = backbone.denoise(
-        noisy_latent,
-        sigma_t,
-        condition,
+    # Partially denoise from pure Gaussian noise to sigma ≈ 0.4 (STOP_AFTER_STEP=24).
+    # Future frame slots are pure noise that gets partially denoised — the model
+    # imagines a plausible future rather than conditioning on stale past frames.
+    crossattn_emb, video_sigma = backbone.generate_video(
+        vid_input=obs_t,
+        num_latent_conditional_frames=backbone.tokenizer.get_latent_num_frames(NUM_OBS_FRAMES),
+        prompt_embedding=lang_t,
+        num_sampling_step=NUM_SAMPLING_STEPS,
+        return_context_at_step=STOP_AFTER_STEP,
+        hidden_state_layer_idx=XATTN_LAYER_IDX,
+        guidance=0.0,
         use_cuda_graphs=False,
-        return_only_hidden_states_up_to=XATTN_LAYER_IDX,
-        return_decoded_video=False,
     )
 
-    crossattn_emb = world_pred.hidden_states[XATTN_LAYER_IDX]  # (1, T, H, W, D)
+    # video_sigma: (B,) → (B, 1) for action head
+    video_sigma = video_sigma.unsqueeze(-1)
+
     B, T, H, W, D = crossattn_emb.shape
-    crossattn_emb = crossattn_emb.reshape(B, T * H * W, D)
-    # 10× pooling
-    crossattn_emb = crossattn_emb.reshape(
-        B, CROSSATTN_POOL_FACTOR, T * H * W // CROSSATTN_POOL_FACTOR, D
-    ).mean(dim=1)
-    return crossattn_emb  # (1, 1920, 2048)
+    crossattn_emb = crossattn_emb.reshape(B, T * H * W, D)  # (1, 19200, 2048)
+    return crossattn_emb, video_sigma
 
 
 def main():
@@ -192,35 +184,36 @@ def main():
 
     # ── mock inputs ───────────────────────────────────────────────────────
     print("\nCreating mock inputs...")
-    fake_frames = np.random.randint(0, 255, (TOTAL_FRAMES, IMG_H, IMG_W, 3), dtype=np.uint8)
+    fake_obs_frames = np.random.randint(0, 255, (NUM_OBS_FRAMES, IMG_H, IMG_W, 3), dtype=np.uint8)
     fake_state = torch.zeros(1, 1, OBS_DIM, device="cuda", dtype=torch.bfloat16)
-    print(f"  frames: {fake_frames.shape}  state: {fake_state.shape}")
+    print(f"  obs frames: {fake_obs_frames.shape}  state: {fake_state.shape}")
+    print(f"  partial denoising: {NUM_SAMPLING_STEPS} steps, stop at step {STOP_AFTER_STEP} (sigma≈0.377)")
 
     # ── backbone forward (timed) ──────────────────────────────────────────
     print("\nRunning backbone forward pass (warmup)...")
     with torch.no_grad():
-        _ = backbone_forward(backbone, fake_frames, lang_emb)
+        _ = backbone_forward(backbone, fake_obs_frames, lang_emb)
     torch.cuda.synchronize()
 
     print("Running backbone forward pass (timed)...")
     t0 = time.perf_counter()
     with torch.no_grad():
-        crossattn_emb = backbone_forward(backbone, fake_frames, lang_emb)
+        crossattn_emb, video_sigma = backbone_forward(backbone, fake_obs_frames, lang_emb)
     torch.cuda.synchronize()
     backbone_ms = (time.perf_counter() - t0) * 1000
 
     print(f"  crossattn_emb shape: {crossattn_emb.shape}")
-    print(f"  Backbone forward: {backbone_ms:.1f} ms")
+    print(f"  video_sigma: {video_sigma[0, 0].item():.4f}  (expected ≈ 0.377)")
+    print(f"  Backbone forward ({STOP_AFTER_STEP} denoising steps): {backbone_ms:.1f} ms")
 
     # ── action head forward ───────────────────────────────────────────────
     print("\nRunning action head...")
-    video_sigma = torch.tensor([[VIDEO_SIGMA]], device="cuda", dtype=torch.bfloat16)
     t0 = time.perf_counter()
     with torch.no_grad():
         actions = action_pipe(
             state_B_HO_O=fake_state,
             crossattn_emb=crossattn_emb,
-            context_timesteps_B_1=video_sigma,
+            context_timesteps_B_1=video_sigma.to(dtype=torch.bfloat16),
         )
     torch.cuda.synchronize()
     action_ms = (time.perf_counter() - t0) * 1000
@@ -230,10 +223,11 @@ def main():
 
     # ── summary ───────────────────────────────────────────────────────────
     print("\n── Timing summary ─────────────────────────────")
-    print(f"  Backbone:    {backbone_ms:7.1f} ms")
-    print(f"  Action head: {action_ms:7.1f} ms")
-    print(f"  Total:       {backbone_ms + action_ms:7.1f} ms")
+    print(f"  Backbone ({STOP_AFTER_STEP}/{NUM_SAMPLING_STEPS} steps): {backbone_ms:7.1f} ms")
+    print(f"  Action head:                  {action_ms:7.1f} ms")
+    print(f"  Total:                        {backbone_ms + action_ms:7.1f} ms")
     print(f"  Control freq (approx): {1000 / (backbone_ms + action_ms):.2f} Hz")
+    print(f"  Note: backbone now runs {STOP_AFTER_STEP} DiT passes vs 1 before — expect ~{STOP_AFTER_STEP}x slower")
 
 
 # ── Real robot control loop (action chunking) ─────────────────────────────
@@ -247,21 +241,20 @@ def main():
 # lang_emb = np.load(LANG_EMB_PATH)
 # backbone, action_pipe = load_backbone(), load_action_head()
 # load_norm_stats(action_pipe)
-# video_sigma = torch.tensor([[VIDEO_SIGMA]], device="cuda", dtype=torch.bfloat16)
 #
 # while task_not_done:
-#     # 1. collect last 61 frames from camera buffer (5 obs + 56 action frames)
-#     frames = get_camera_frames()          # (61, H, W, 3) uint8
-#     state  = get_robot_state()            # (1, 1, 5) torch bfloat16 on cuda
+#     # 1. collect 5 obs frames from camera buffer
+#     obs_frames = get_camera_frames()      # (5, H, W, 3) uint8
+#     state      = get_robot_state()        # (1, 1, 5) torch bfloat16 on cuda
 #
-#     # 2. backbone: slow, run once per chunk
-#     crossattn_emb = backbone_forward(backbone, frames, lang_emb)  # (1, 1920, 2048)
+#     # 2. backbone: partially denoise imagined future (STOP_AFTER_STEP denoising steps)
+#     crossattn_emb, video_sigma = backbone_forward(backbone, obs_frames, lang_emb)
 #
 #     # 3. action head: fast, predicts full 90-step chunk at once
 #     actions = action_pipe(
 #         state_B_HO_O=state,
 #         crossattn_emb=crossattn_emb,
-#         context_timesteps_B_1=video_sigma,
+#         context_timesteps_B_1=video_sigma.to(dtype=torch.bfloat16),
 #     )  # (1, 90, 5)
 #
 #     # 4. execute all 90 actions on the robot at 30 Hz

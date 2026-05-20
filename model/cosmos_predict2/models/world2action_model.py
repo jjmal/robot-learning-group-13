@@ -336,7 +336,23 @@ class World2ActionModel(ImaginaireModel):
         data_batch: dict,
         video_sigma_B_1: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        _, video_B_C_T_H_W, condition = self.video2world_pipe.get_mimic_data_and_condition(data_batch)
+        if "video_embeddings" in data_batch:
+            # Algorithm 2: use pre-tokenized latents, skip VAE, sample fresh τv each step
+            video_B_C_T_H_W = data_batch["video_embeddings"].to(**self.tensor_kwargs)
+            B, C, T, H_l, W_l = video_B_C_T_H_W.shape
+            data_batch["padding_mask"] = torch.zeros(B, 1, H_l, W_l, **self.tensor_kwargs)
+            data_batch["fps"] = torch.full((B, 1), 5.0, device=self.tensor_kwargs["device"])  # match backbone fine-tuning (dataset_video.py hardcodes fps=5)
+            condition = self.video2world_pipe.conditioner(data_batch)
+            condition = condition.edit_data_type(DataType.VIDEO)
+            num_cond = int(data_batch["num_conditional_frames"].flatten()[0].item())
+            condition = condition.set_video_condition(
+                gt_frames=video_B_C_T_H_W,
+                random_min_num_conditional_frames=self.video2world_pipe.config.min_num_conditional_frames,
+                random_max_num_conditional_frames=self.video2world_pipe.config.max_num_conditional_frames,
+                num_conditional_frames=num_cond,
+            )
+        else:
+            _, video_B_C_T_H_W, condition = self.video2world_pipe.get_mimic_data_and_condition(data_batch)
 
         video_epsilon_B_C_T_H_W = torch.randn(video_B_C_T_H_W.size(), **self.tensor_kwargs)
 
@@ -358,7 +374,7 @@ class World2ActionModel(ImaginaireModel):
         gc.collect(0)
 
         B, T, H, W, D = crossattn_emb.shape
-        crossattn_emb = crossattn_emb.reshape(B, T * H * W, D)
+        crossattn_emb = crossattn_emb.reshape(B, T * H * W, D)  # (B, 19200, 2048)
 
         return crossattn_emb, video_sigma_B_1
 

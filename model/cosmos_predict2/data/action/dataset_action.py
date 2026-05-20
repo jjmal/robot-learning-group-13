@@ -40,6 +40,8 @@ class MimicDataset(torch.utils.data.Dataset):
         train: bool = True,
         verbose: bool = False,
         load_precomputed_crossattn_emb: bool = False,
+        load_precomputed_video_latents: bool = False,
+        video_latents_dir: str | None = None,
     ) -> None:
         self._data_dir = pathlib.Path(data_dir)
         self._episode_paths = get_paths(self._data_dir, verbose=verbose)
@@ -95,6 +97,8 @@ class MimicDataset(torch.utils.data.Dataset):
             stats_id=self._stats_id,
             data_dir=self.data_dir,
             load_precomputed_crossattn_emb=load_precomputed_crossattn_emb,
+            load_precomputed_video_latents=load_precomputed_video_latents,
+            video_latents_dir=video_latents_dir,
         )
 
         self._threadpool_limits_is_applied = False

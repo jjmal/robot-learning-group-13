@@ -31,4 +31,6 @@ dataset:
   should_include_padded_tails: True
   seed: 42
   num_val_episodes: 1
-  load_precomputed_crossattn_emb: True
+  load_precomputed_crossattn_emb: False
+  load_precomputed_video_latents: True
+  video_latents_dir: /ephemeral/rl-group13-merged-h264/video_embeddings

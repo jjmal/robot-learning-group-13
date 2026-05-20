@@ -2,6 +2,7 @@ import bisect
 import logging
 import math
 import multiprocessing
+import pathlib
 import typing
 from functools import partial
 from pathlib import Path
@@ -33,6 +34,8 @@ class ChunkReader:
         logger: logging.Logger | None = None,
         verbose: bool = False,
         load_precomputed_crossattn_emb: bool = False,
+        load_precomputed_video_latents: bool = False,
+        video_latents_dir: str | None = None,
     ) -> None:
         self._logger = logger or logging.getLogger(__name__)
 
@@ -112,6 +115,9 @@ class ChunkReader:
         self._data_dir = data_dir
         self._verbose = verbose
         self._load_precomputed_crossattn_emb = load_precomputed_crossattn_emb
+        self._load_precomputed_video_latents = load_precomputed_video_latents
+        self._video_latents_dir = pathlib.Path(video_latents_dir) if video_latents_dir else None
+        self._video_latents_idx_cache: dict[int, tuple | None] = {}
 
     def _get_timesteps(
         self,
@@ -181,6 +187,20 @@ class ChunkReader:
 
     def restrict_keys(self, keys: set[str] | None) -> None:
         self._restrict_keys = keys
+
+    def _get_video_latents_info(self, episode_idx: int) -> tuple | None:
+        if episode_idx not in self._video_latents_idx_cache:
+            episode_stem = pathlib.Path(self._episode_paths[episode_idx]).stem
+            latents_path = self._video_latents_dir / f"{episode_stem}.safetensors"
+            if latents_path.exists():
+                from safetensors import safe_open
+                with safe_open(str(latents_path), framework="pt", device="cpu") as f:
+                    idxs = f.get_tensor("video_embeddings_idxs").numpy()
+                    num_cond = int(f.get_tensor("num_conditional_frames").item())
+                self._video_latents_idx_cache[episode_idx] = (latents_path, idxs, num_cond)
+            else:
+                self._video_latents_idx_cache[episode_idx] = None
+        return self._video_latents_idx_cache[episode_idx]
 
     def _read_chunk(
         self, root, key: str, meta: ObsMeta, step_timestamp: int, progress: float, *, is_action: bool
@@ -290,4 +310,21 @@ class ChunkReader:
                 window_idx = int(max(0, np.searchsorted(window_starts, frame_idx, side="right") - 1))
                 result["crossattn_emb"] = root["crossattn_emb"][window_idx].astype(np.float32)
                 result["video_sigma"] = np.array([root.attrs["crossattn_sigma"]], dtype=np.float32)
+
+            if self._load_precomputed_video_latents and self._video_latents_dir is not None and self._restrict_keys is None:
+                cached = self._get_video_latents_info(episode_idx)
+                if cached is not None:
+                    latents_path, idxs, num_cond = cached
+                    if "workspace_rgb_timestamps" in root:
+                        rgb_ts = root["workspace_rgb_timestamps"][:]
+                        frame_idx = int(np.searchsorted(rgb_ts, step_timestamp, side="left"))
+                        frame_idx = min(frame_idx, len(rgb_ts) - 1)
+                    else:
+                        frame_idx = step_idx
+                    window_idx = int(np.argmin(np.abs(idxs - frame_idx)))
+                    from safetensors import safe_open
+                    with safe_open(str(latents_path), framework="pt", device="cpu") as f:
+                        result["video_embeddings"] = f.get_slice("video_embeddings")[window_idx].numpy()
+                    result["num_conditional_frames"] = np.array(num_cond, dtype=np.int64)
+
             return result
